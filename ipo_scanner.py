@@ -6,8 +6,6 @@ from io import BytesIO
 from datetime import datetime, timedelta
 import warnings
 
-import config
-
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 # --------------------------
