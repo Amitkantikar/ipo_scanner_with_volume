@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # --------------------------
 # CONFIG
 # --------------------------
-MIN_LISTING_DAYS = 150      # number of days since listing
+MIN_LISTING_DAYS = 120      # number of days since listing
 THRESHOLD = 0.03            # 3% near ATH
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
@@ -37,7 +37,7 @@ def send_telegram(msg: str):
 
 
 # --------------------------
-# BULK DEAL CHECK (NSE)
+# BULK DEAL CHECK
 # --------------------------
 def check_bulk_deal(symbol):
     try:
@@ -45,27 +45,22 @@ def check_bulk_deal(symbol):
         r = requests.get(url, timeout=30)
         df = pd.read_csv(BytesIO(r.content))
         df.columns = df.columns.str.strip()
-
-        if "SYMBOL" in df.columns:
-            return symbol.upper() in df["SYMBOL"].astype(str).str.upper().values
-
-        return False
+        return symbol.upper() in df["SYMBOL"].astype(str).str.upper().values
     except:
         return False
 
 
 # --------------------------
-# POSITIVE NEWS CHECK (Yahoo Finance)
+# POSITIVE NEWS CHECK
 # --------------------------
 def check_positive_news(symbol):
     try:
         tk = yf.Ticker(symbol + ".NS")
         news_list = tk.news
-
         if not news_list:
             return False
 
-        positive_words = [
+        pos_words = [
             "surge", "jumps", "rallies", "strong", "record",
             "expands", "beats", "profit", "growth", "upgrade",
             "bullish", "wins", "approval"
@@ -73,36 +68,29 @@ def check_positive_news(symbol):
 
         for item in news_list:
             title = item.get("title", "").lower()
-            if any(word in title for word in positive_words):
+            if any(w in title for w in pos_words):
                 return True
 
         return False
-
     except:
         return False
 
 
 # --------------------------
-# INSIDER BUYING CHECK (BSE Insider Trading API)
+# INSIDER BUYING CHECK
 # --------------------------
 def check_insider_buying(symbol):
-    """
-    Returns True if insiders bought shares in last 30 days.
-    Handles empty/HTML responses gracefully.
-    """
     try:
         end = datetime.now().strftime("%Y-%m-%d")
         start = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
 
         url = "https://api.bseindia.com/BseIndiaAPI/api/InsiderTrading/w"
-
         headers = {
             "User-Agent": "Mozilla/5.0",
             "Accept": "application/json, text/plain, */*",
             "Content-Type": "application/json",
             "Referer": "https://www.bseindia.com",
         }
-
         payload = {
             "pageno": 1,
             "strPrevDate": start,
@@ -112,9 +100,7 @@ def check_insider_buying(symbol):
 
         r = requests.post(url, json=payload, headers=headers, timeout=15)
 
-        if not r.text.strip():
-            return False
-        if r.text.strip().startswith("<"):
+        if not r.text.strip() or r.text.strip().startswith("<"):
             return False
 
         try:
@@ -126,8 +112,8 @@ def check_insider_buying(symbol):
             return False
 
         for row in data["Table"]:
-            action = str(row.get("Mode", "")).lower()
-            if any(x in action for x in ["acquisition", "buy", "purchase"]):
+            mode = str(row.get("Mode", "")).lower()
+            if any(x in mode for x in ["acquisition", "buy", "purchase"]):
                 return True
 
         return False
@@ -149,51 +135,64 @@ def fetch_equity_list():
 
 
 # --------------------------
+# SAFE DATE PARSER
+# --------------------------
+def safe_parse_date(x):
+    for fmt in ("%d-%b-%Y", "%d-%b-%y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d/%m/%y"):
+        try:
+            return datetime.strptime(str(x), fmt)
+        except:
+            continue
+    return pd.NaT
+
+
+# --------------------------
 # Filter IPOs listed within X days
 # --------------------------
 def get_recent_ipos(days: int):
     df = fetch_equity_list()
 
-    df["DATE OF LISTING"] = pd.to_datetime(df["DATE OF LISTING"], errors="coerce")
+    # parse dates safely
+    df["DATE OF LISTING"] = df["DATE OF LISTING"].apply(safe_parse_date)
+
+    # remove rows with invalid date
     df = df.dropna(subset=["DATE OF LISTING"])
 
+    # ensure we keep only the EARLIEST listing date per stock
+    df = df.sort_values("DATE OF LISTING")
+    df = df.groupby("SYMBOL", as_index=False).first()
+
     cutoff = datetime.now() - timedelta(days=days)
-    df = df[df["SERIES"] == "EQ"]
-    df = df.groupby("SYMBOL", as_index=False).first()   # pick earliest listing date
-    df = df[df["DATE OF LISTING"] >= cutoff]
+
+    # FILTER: only stocks truly listed in last X days
+    recent = df[df["DATE OF LISTING"] >= cutoff]
+
+    # only EQ series
+    recent = recent[recent["SERIES"] == "EQ"]
 
     return recent["SYMBOL"].tolist()
 
 
 # --------------------------
-# Fetch full history (single-ticker)
+# Fetch full history
 # --------------------------
 def fetch_history(symbol):
     try:
         hist = yf.Ticker(symbol + ".NS").history(period="max")
-        if hist.empty:
-            return None
-        return hist
     except:
         return None
+    return hist if not hist.empty else None
 
 
 # --------------------------
 # Compute ATH
 # --------------------------
 def compute_ath(hist):
-    if hist is None or hist.empty:
-        return None
-
-    if "High" not in hist.columns:
-        return None
-
     try:
         ath = hist["High"].max()
         ath_idx = hist["High"].idxmax()
         ath_pos = hist.index.get_loc(ath_idx)
-        total = len(hist)
-        return ath, ath_idx, ath_pos, total
+        return ath, ath_idx, ath_pos, len(hist)
     except:
         return None
 
@@ -215,13 +214,7 @@ if __name__ == "__main__":
             print("No YF history:", sym)
             continue
 
-        # ------------------------------------
-        # REMOVE volume filter completely
-        # ------------------------------------
-
-        # ------------------------------------
-        # ATH calculation
-        # ------------------------------------
+        # ATH
         ath_info = compute_ath(hist)
         if not ath_info:
             print("ATH unavailable:", sym)
@@ -229,17 +222,14 @@ if __name__ == "__main__":
 
         ath, ath_idx, ath_pos, total = ath_info
 
-        # Must have minimum 3 candles since ATH
+        # must have 3 candles since ATH
         if ath_pos > total - 4:
             print("ATH too recent, skipping.")
             continue
 
-        # Current CMP
         current = hist["Close"].iloc[-1]
 
-        # ------------------------------------
-        # NEW SIGNALS (Bulk / News / Insider)
-        # ------------------------------------
+        # SIGNALS
         has_bulk = check_bulk_deal(sym)
         has_news = check_positive_news(sym)
         has_insider = check_insider_buying(sym)
@@ -248,19 +238,16 @@ if __name__ == "__main__":
         news_msg = "Yes" if has_news else "No"
         insider_msg = "Yes" if has_insider else "No"
 
-        # ------------------------------------
-        # MAIN ALERT CONDITION
-        # ------------------------------------
+        # MAIN CONDITION
         if current >= ath * (1 - THRESHOLD):
             diff = round((ath - current) / ath * 100, 2)
 
             msg = (
                 f"🚨 *IPO Near All-Time High!*\n"
                 f"*Symbol:* {sym}\n"
-                f"*Listing Date:* {hist.index[0].date()}\n"
                 f"*ATH:* {ath:.2f}\n"
                 f"*CMP:* {current:.2f}\n"
-                f"*Distance from ATH:* {diff}%\n"
+                f"*Distance:* {diff}%\n"
                 f"*Bulk Deal:* {bulk_msg}\n"
                 f"*Positive News:* {news_msg}\n"
                 f"*Insider Buying:* {insider_msg}"
