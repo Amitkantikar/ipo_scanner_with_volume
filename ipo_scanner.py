@@ -38,6 +38,56 @@ def send_telegram(msg: str):
 
 
 # --------------------------
+# BULK DEAL CHECK
+# --------------------------
+def check_bulk_deal(symbol):
+    """
+    Returns True if symbol appears in today's NSE bulk deals.
+    """
+    try:
+        url = "https://archives.nseindia.com/content/equities/bulk.csv"
+        r = requests.get(url, timeout=30)
+        df = pd.read_csv(BytesIO(r.content))
+        df.columns = df.columns.str.strip()
+
+        # Check if SYMBOL is found
+        if "SYMBOL" in df.columns:
+            return symbol in df["SYMBOL"].astype(str).str.upper().values
+        return False
+    except:
+        return False
+
+
+# --------------------------
+# POSITIVE NEWS CHECK (Yahoo Finance)
+# --------------------------
+def check_positive_news(symbol):
+    """
+    Returns True if Yahoo Finance shows any recent positive headlines.
+    Uses simple keyword filtering.
+    """
+    try:
+        tk = yf.Ticker(symbol + ".NS")
+        news_list = tk.news
+
+        if not news_list:
+            return False
+
+        positive_keywords = [
+            "surge", "jumps", "rallies", "strong", "record", "expands",
+            "beats", "profit", "growth", "upgrade", "bullish", "wins", "approval"
+        ]
+
+        for item in news_list:
+            title = item.get("title", "").lower()
+            if any(word in title for word in positive_keywords):
+                return True
+        return False
+    except:
+        return False
+
+
+# --------------------------
 # Load NSE Equity CSV
 # --------------------------
 def fetch_equity_list():
@@ -122,7 +172,7 @@ if __name__ == "__main__":
             print("Not enough candles for volume filter:", sym)
             continue
 
-        v0 = hist["Volume"].iloc[-1]   # current volume
+        v0 = hist["Volume"].iloc[-1]
         v1 = hist["Volume"].iloc[-2]
         v2 = hist["Volume"].iloc[-3]
 
@@ -149,6 +199,17 @@ if __name__ == "__main__":
         # Current CMP
         current = hist["Close"].iloc[-1]
 
+        # ------------------------------------
+        # ⭐ NEW FILTERS — BULK DEAL + POSITIVE NEWS
+        # ------------------------------------
+        has_bulk = check_bulk_deal(sym)
+        has_news = check_positive_news(sym)
+
+        bulk_msg = "Yes" if has_bulk else "No"
+        news_msg = "Yes" if has_news else "No"
+
+        # ------------------------------------
+
         # Threshold check
         if current >= ath * (1 - THRESHOLD):
             diff = round((ath - current) / ath * 100, 2)
@@ -160,7 +221,9 @@ if __name__ == "__main__":
                 f"*ATH:* {ath:.2f}\n"
                 f"*CMP:* {current:.2f}\n"
                 f"*Distance from ATH:* {diff}%\n"
-                f"*Volume Spike:* {v0} (avg2 = {int(avg_last_2)})"
+                f"*Volume Spike:* {v0} (avg2 = {int(avg_last_2)})\n"
+                f"*Bulk Deal:* {bulk_msg}\n"
+                f"*Positive News:* {news_msg}"
             )
 
             print("ALERT:", sym, diff)
