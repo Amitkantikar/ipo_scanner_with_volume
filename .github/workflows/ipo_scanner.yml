@@ -1,0 +1,45 @@
+
+name: IPO Scanner
+
+on:
+  schedule:
+    # 9:15–9:29 IST = 03:45–03:59 UTC (3 triggers)
+    - cron: "45 3 * * 1-5"
+    - cron: "50 3 * * 1-5"
+    - cron: "55 3 * * 1-5"
+
+    # 9:30–15:30 IST = 04:00–10:00 UTC (every 5 minutes)
+    - cron: "*/5 4-10 * * 1-5"
+
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Restore IPO Cache
+        uses: actions/cache@v4
+        with:
+          path: ipo_cache.pkl
+          key: ipo-cache-file
+
+      - name: Install dependencies
+        run: |
+          pip install yfinance pandas requests
+
+      - name: Run IPO Scanner
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python ipo_scanner.py
+
+      - name: Save IPO Cache
+        uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: ipo_cache.pkl
+          key: ipo-cache-file
