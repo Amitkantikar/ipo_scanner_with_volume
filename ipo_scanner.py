@@ -158,8 +158,9 @@ def get_recent_ipos(days: int):
     df = df.dropna(subset=["DATE OF LISTING"])
 
     cutoff = datetime.now() - timedelta(days=days)
-    recent = df[df["DATE OF LISTING"] >= cutoff]
-    recent = recent[recent["SERIES"] == "EQ"]
+    df = df[df["SERIES"] == "EQ"]
+    df = df.groupby("SYMBOL", as_index=False).first()   # pick earliest listing date
+    df = df[df["DATE OF LISTING"] >= cutoff]
 
     return recent["SYMBOL"].tolist()
 
